@@ -705,7 +705,7 @@ footer.app-footer {
           <h2>Bulk: Excel &rarr; QR codes</h2>
           <p class="sub">Upload a spreadsheet that has a column of links. Each link becomes a styled QR code, in row order, and you get back an Excel file with the original data plus the QR images.</p>
 
-          <div class="alert info">Tip: any styling you set in the left panel (colour, dots, icon, frame) is applied to every QR code in the batch.</div>
+          <div class="alert info">Tip: any styling you set in the left panel (colour, dots, icon, frame) is applied to every QR code in the batch &mdash; including the centre-icon options (clear dots, backdrop transparent, backdrop colour), even when the centre word comes from a column.</div>
           <div id="bulkAlert"></div>
 
           <div class="steps">
@@ -1421,6 +1421,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $("#bulkResultGrid").innerHTML = "";
     $("#downloadZipBtn").disabled = true;
     $("#bulkFileName").textContent = "";
+    updateIconRemoveBgVisibility();
   }
 
   function renderBulkPreview() {
@@ -1447,6 +1448,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $("#bulkStep2").classList.remove("hidden");
     $("#bulkStep3").classList.remove("hidden");
     $("#bulkStepPreview").classList.remove("hidden");
+    updateIconRemoveBgVisibility();
     renderBulkQrPreview();
   }
 
@@ -1962,9 +1964,13 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     updateIconRemoveBgVisibility();
   }
   function updateIconRemoveBgVisibility() {
-    $("#iconOptsWrap").classList.toggle("hidden", state.iconMode === "none");
+    // In Bulk mode the centre word can come from a spreadsheet column, so the
+    // icon options must stay editable even when the single-tab icon mode is "none".
+    var bulkWordMapped = bulk.headers.length > 0 && bulk.wordCol >= 0;
+    var showOpts = state.iconMode !== "none" || bulkWordMapped;
+    $("#iconOptsWrap").classList.toggle("hidden", !showOpts);
     var bgWrap = $("#iconBgColorWrap");
-    if (bgWrap) bgWrap.classList.toggle("hidden", state.iconBgTransparent || state.iconMode === "none");
+    if (bgWrap) bgWrap.classList.toggle("hidden", state.iconBgTransparent || !showOpts);
   }
   function updateIconModeRadios() {
     $$('input[name="iconMode"]').forEach(function (r) { r.checked = (r.value === state.iconMode); });
@@ -2157,6 +2163,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // word column select
     $("#wordColSelect").addEventListener("change", function (e) {
       bulk.wordCol = parseInt(e.target.value, 10);
+      updateIconRemoveBgVisibility();
       renderBulkQrPreview();
     });
 
