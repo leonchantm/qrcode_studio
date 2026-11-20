@@ -343,6 +343,7 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 
 /* upload */
 .dropzone {
+  display: block; width: 100%; box-sizing: border-box;
   border: 2px dashed var(--border-strong); border-radius: var(--radius);
   padding: 26px; text-align: center; color: var(--text-muted);
   background: var(--surface-2); cursor: pointer; transition: 0.15s;
@@ -351,6 +352,22 @@ input[type="checkbox"], input[type="radio"] { accent-color: var(--accent); width
 .dropzone .dz-title { font-weight: 700; color: var(--text); font-size: 15px; }
 .dropzone .dz-sub { font-size: 12px; margin-top: 4px; }
 .dropzone input { display: none; }
+
+/* QR gallery (bulk preview / generated results) */
+.qr-gallery {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px; margin-top: 10px;
+}
+.qr-card {
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px; text-align: center;
+}
+.qr-card canvas, .qr-card img { max-width: 100%; height: auto; display: block; margin: 0 auto 8px; }
+.qr-card .qr-cap {
+  font-size: 11px; color: var(--text-muted); margin-bottom: 6px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qr-card .qr-empty { font-size: 11px; color: var(--text-muted); padding: 24px 0; }
 
 /* table preview */
 .table-wrap { overflow: auto; max-height: 240px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
@@ -746,14 +763,29 @@ footer.app-footer {
               <div class="small muted" style="margin-top:6px"><span id="bulkRowCount">0 rows</span> detected (first row used as headers).</div>
             </div>
 
+            <!-- Step 2b: QR preview -->
+            <div class="step hidden" id="bulkStepPreview">
+              <div class="step-title">Preview</div>
+              <div class="small muted">The first few rows rendered with your current style (from the left panel). Change the style and the preview updates &mdash; all rows get the same treatment when you generate.</div>
+              <div class="qr-gallery" id="bulkQrGrid"></div>
+              <div style="margin-top:8px">
+                <button class="btn ghost sm" id="refreshBulkPreviewBtn" type="button">Refresh preview</button>
+              </div>
+            </div>
+
             <!-- Step 3 -->
             <div class="step hidden" id="bulkStep3">
               <div class="step-title">Generate &amp; export</div>
-              <button class="btn primary block" id="generateBtn"><span class="label">Generate &amp; Export Excel</span></button>
+              <div class="row-2" style="grid-template-columns:1fr 1fr;gap:10px">
+                <button class="btn primary block" id="generateBtn"><span class="label">Generate &amp; Export Excel</span></button>
+                <button class="btn block" id="downloadZipBtn" disabled><span class="label">Download all images (.zip)</span></button>
+              </div>
+              <div class="small muted" style="margin-top:6px">Image files are named after the title column.</div>
               <div class="progress-row" style="margin-top:12px">
                 <div class="progress" id="bulkProgress"><div></div></div>
                 <span class="pct" id="bulkPct">0%</span>
               </div>
+              <div class="qr-gallery" id="bulkResultGrid"></div>
             </div>
           </div>
         </div>
@@ -919,7 +951,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     wordCol: -1,            // column index for per-row centre word (-1 = none)
     captionMode: "fixed",   // fixed | column
     captionTemplate: "{label}",
-    generating: false
+    generating: false,
+    results: []             // [{ name, blob }] PNG blobs from last generate (for ZIP)
   };
 
   var $ = function (sel, root) { return (root || document).querySelector(sel); };
@@ -1218,6 +1251,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   var previewEl, previewEmptyEl;
   var renderPreview = debounce(function () {
+    if (bulk.rows.length) renderBulkQrPreview(); // keep bulk preview in sync with style changes
     if (!state.content || !state.content.trim()) {
       previewEl.innerHTML = "";
       previewEmptyEl.classList.remove("hidden");
@@ -1378,9 +1412,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
 
   function clearBulkPreview() {
     bulk.headers = []; bulk.rows = [];
+    bulk.results = [];
     $("#bulkPreviewWrap").classList.add("hidden");
     $("#bulkStep2").classList.add("hidden");
     $("#bulkStep3").classList.add("hidden");
+    $("#bulkStepPreview").classList.add("hidden");
+    $("#bulkQrGrid").innerHTML = "";
+    $("#bulkResultGrid").innerHTML = "";
+    $("#downloadZipBtn").disabled = true;
     $("#bulkFileName").textContent = "";
   }
 
@@ -1407,6 +1446,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $("#bulkRowCount").textContent = bulk.rows.length + " data row" + (bulk.rows.length === 1 ? "" : "s");
     $("#bulkStep2").classList.remove("hidden");
     $("#bulkStep3").classList.remove("hidden");
+    $("#bulkStepPreview").classList.remove("hidden");
+    renderBulkQrPreview();
   }
 
   function renderColumnSelects() {
@@ -1426,6 +1467,84 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (wordSel) { wordSel.innerHTML = optHtml; wordSel.value = String(bulk.wordCol); }
   }
 
+  /* ---------------- Bulk: image naming ---------------- */
+
+  function sanitizeFilename(name) {
+    var s = String(name == null ? "" : name).replace(/[\\/:*?"<>|\r\n\t]+/g, " ").replace(/\s+/g, " ").trim();
+    return s.slice(0, 80);
+  }
+
+  function bulkDisplayName(row, i) {
+    var name = "";
+    if (bulk.labelCol >= 0 && row[bulk.labelCol] != null) name = sanitizeFilename(String(row[bulk.labelCol]));
+    if (!name) name = "qr-" + (i + 1);
+    return name;
+  }
+
+  // Returns a unique name, tracking usage in `used` (a plain object).
+  function uniqueName(name, used) {
+    if (!used[name]) { used[name] = 1; return name; }
+    var n = used[name], candidate;
+    do { n++; candidate = name + " (" + n + ")"; } while (used[candidate]);
+    used[name] = n; used[candidate] = 1;
+    return candidate;
+  }
+
+  /* ---------------- Bulk: QR preview ---------------- */
+
+  var PREVIEW_ROWS = 6;
+  var renderBulkQrPreview = debounce(function () {
+    var grid = $("#bulkQrGrid");
+    if (!grid || bulk.generating || !bulk.rows.length) return;
+    var bulkPanel = $('[data-tab="bulk"]');
+    if (!bulkPanel || !bulkPanel.classList.contains("active")) return;
+
+    var baseStyle = clone(state);
+    var template = bulk.captionTemplate || "{label}";
+    grid.innerHTML = "";
+    var n = Math.min(PREVIEW_ROWS, bulk.rows.length);
+    var chain = Promise.resolve();
+    for (var i = 0; i < n; i++) (function (idx) {
+      chain = chain.then(function () {
+        if (bulk.generating) return; // user hit Generate mid-preview
+        var row = bulk.rows[idx];
+        var link = String(row[bulk.linkCol] == null ? "" : row[bulk.linkCol]).trim();
+        var card = document.createElement("div");
+        card.className = "qr-card";
+        var cap = document.createElement("div");
+        cap.className = "qr-cap";
+        cap.textContent = bulkDisplayName(row, idx) + (link ? " \u2014 " + link : " \u2014 (empty link)");
+        cap.title = cap.textContent;
+        card.appendChild(cap);
+        grid.appendChild(card);
+        if (!link) {
+          var empty = document.createElement("div");
+          empty.className = "qr-empty";
+          empty.textContent = "No link in this row";
+          card.appendChild(empty);
+          return;
+        }
+        var st = clone(baseStyle);
+        var label = (bulk.captionMode === "column" && bulk.labelCol >= 0)
+          ? String(row[bulk.labelCol] == null ? "" : row[bulk.labelCol]) : "";
+        var word = bulk.wordCol >= 0 ? String(row[bulk.wordCol] == null ? "" : row[bulk.wordCol]).trim() : "";
+        if (label) st.frameCaption = template.replace(/\{label\}/g, label).replace(/\{link\}/g, link);
+        if (word) { st.iconMode = "word"; st.iconWord = word; st.iconDataUrl = resolveIconDataUrl(st); }
+        return renderComposite(link, st).then(function (res) {
+          if (bulk.generating) return;
+          res.canvas.style.maxWidth = "100%";
+          res.canvas.style.height = "auto";
+          card.appendChild(res.canvas);
+        }).catch(function (err) {
+          var fail = document.createElement("div");
+          fail.className = "qr-empty";
+          fail.textContent = "Render failed: " + (err && err.message ? err.message : err);
+          card.appendChild(fail);
+        });
+      });
+    })(i);
+  }, 250);
+
   /* ---------------- Bulk: generate & export ---------------- */
 
   function generateBulk() {
@@ -1436,6 +1555,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     bulk.generating = true;
     setBusy(true);
     $("#bulkAlert").innerHTML = "";
+    bulk.results = [];
+    $("#bulkResultGrid").innerHTML = "";
+    $("#downloadZipBtn").disabled = true;
+    var usedNames = Object.create(null);
     var bar = $("#bulkProgress > div");
     var pct = $("#bulkPct");
     bar.style.width = "0%"; pct.textContent = "0%";
@@ -1477,7 +1600,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
         var blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
         downloadBlob(blob, "qr-codes.xlsx");
         bar.style.width = "100%"; pct.textContent = "100%";
-        showAlert("#bulkAlert", "ok", "Done! " + count + " QR codes embedded and exported to qr-codes.xlsx.");
+        $("#downloadZipBtn").disabled = bulk.results.length === 0;
+        showAlert("#bulkAlert", "ok", "Done! " + count + " QR codes embedded and exported to qr-codes.xlsx. Click \u201cDownload all images (.zip)\u201d to get every PNG in one file.");
       });
     }).catch(function (err) {
       console.error(err);
@@ -1516,7 +1640,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
           }
         }
         p = renderComposite(link, st).then(function (res) {
+          addResultThumb(res.canvas, bulkDisplayName(row, i) + " \u2014 " + link);
           return canvasToBlob(res.canvas, "image/png").then(function (blob) {
+            bulk.results.push({ name: uniqueName(bulkDisplayName(row, i), usedNames), blob: blob });
             return blob.arrayBuffer();
           }).then(function (ab) {
             var imageId = wb.addImage({ buffer: new Uint8Array(ab), extension: "png" });
@@ -1545,6 +1671,139 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     btn.querySelector(".label").textContent = b ? "Generating\u2026" : "Generate & Export Excel";
   }
 
+  function addResultThumb(canvas, caption) {
+    var grid = $("#bulkResultGrid");
+    if (!grid) return;
+    var card = document.createElement("div");
+    card.className = "qr-card";
+    var cap = document.createElement("div");
+    cap.className = "qr-cap";
+    cap.textContent = caption;
+    cap.title = caption;
+    card.appendChild(cap);
+    canvas.style.maxWidth = "100%";
+    canvas.style.height = "auto";
+    card.appendChild(canvas);
+    grid.appendChild(card);
+    if (grid.children.length > 60) grid.removeChild(grid.firstChild); // keep it light
+  }
+
+  /* Minimal ZIP writer (STORE method, no external library).
+     PNGs are already compressed, so no deflate is needed. Bit 11 (0x0800)
+     marks filenames as UTF-8 so Chinese titles open correctly. */
+  var CRC_TABLE = (function () {
+    var table = new Uint32Array(256);
+    for (var i = 0; i < 256; i++) {
+      var c = i;
+      for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[i] = c >>> 0;
+    }
+    return table;
+  })();
+
+  function crc32(bytes) {
+    var c = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+    return (c ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  function makeZip(files) { // files: [{ name, data: Uint8Array }]
+    var enc = new TextEncoder();
+    var now = new Date();
+    var dosTime = (now.getHours() << 11) | (now.getMinutes() << 5) | (now.getSeconds() >> 1);
+    var dosDate = ((now.getFullYear() - 1980) << 9) | ((now.getMonth() + 1) << 5) | now.getDate();
+    var parts = [], central = [], offset = 0, cdSize = 0;
+
+    files.forEach(function (f) {
+      var nameBytes = enc.encode(f.name);
+      var data = f.data;
+      var crc = crc32(data);
+
+      var local = new Uint8Array(30 + nameBytes.length);
+      var lv = new DataView(local.buffer);
+      lv.setUint32(0, 0x04034b50, true);   // local file header signature
+      lv.setUint16(4, 20, true);            // version needed
+      lv.setUint16(6, 0x0800, true);        // UTF-8 filenames
+      lv.setUint16(8, 0, true);             // method: store
+      lv.setUint16(10, dosTime, true);
+      lv.setUint16(12, dosDate, true);
+      lv.setUint32(14, crc, true);
+      lv.setUint32(18, data.length, true);  // compressed size
+      lv.setUint32(22, data.length, true);  // uncompressed size
+      lv.setUint16(26, nameBytes.length, true);
+      lv.setUint16(28, 0, true);            // extra length
+      local.set(nameBytes, 30);
+      parts.push(local, data);
+
+      var cd = new Uint8Array(46 + nameBytes.length);
+      var cv = new DataView(cd.buffer);
+      cv.setUint32(0, 0x02014b50, true);   // central directory signature
+      cv.setUint16(4, 20, true);            // version made by
+      cv.setUint16(6, 20, true);            // version needed
+      cv.setUint16(8, 0x0800, true);
+      cv.setUint16(10, 0, true);
+      cv.setUint16(12, dosTime, true);
+      cv.setUint16(14, dosDate, true);
+      cv.setUint32(16, crc, true);
+      cv.setUint32(20, data.length, true);
+      cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nameBytes.length, true);
+      cv.setUint16(30, 0, true);            // extra length
+      cv.setUint16(32, 0, true);            // comment length
+      cv.setUint16(34, 0, true);            // disk number
+      cv.setUint16(36, 0, true);            // internal attributes
+      cv.setUint32(38, 0, true);            // external attributes
+      cv.setUint32(42, offset, true);       // local header offset
+      cd.set(nameBytes, 46);
+      central.push(cd);
+
+      offset += local.length + data.length;
+      cdSize += cd.length;
+    });
+
+    var end = new Uint8Array(22);
+    var ev = new DataView(end.buffer);
+    ev.setUint32(0, 0x06054b50, true);     // end of central directory
+    ev.setUint16(4, 0, true);
+    ev.setUint16(6, 0, true);
+    ev.setUint16(8, files.length, true);
+    ev.setUint16(10, files.length, true);
+    ev.setUint32(12, cdSize, true);
+    ev.setUint32(16, offset, true);
+    ev.setUint16(20, 0, true);
+
+    return new Blob(parts.concat(central, [end]), { type: "application/zip" });
+  }
+
+  function downloadBulkZip() {
+    try {
+      if (bulk.generating) {
+        showAlert("#bulkAlert", "warn", "Still generating \u2014 please wait until the progress bar reaches 100%.");
+        return;
+      }
+      if (!bulk.results.length) {
+        showAlert("#bulkAlert", "warn", "Nothing to zip yet \u2014 generate the batch first.");
+        return;
+      }
+      showAlert("#bulkAlert", "info", "Zipping " + bulk.results.length + " images\u2026");
+      Promise.all(bulk.results.map(function (r) {
+        return r.blob.arrayBuffer().then(function (ab) {
+          return { name: r.name + ".png", data: new Uint8Array(ab) };
+        });
+      })).then(function (files) {
+        var blob = makeZip(files);
+        downloadBlob(blob, "qr-codes.zip");
+        showAlert("#bulkAlert", "ok", "qr-codes.zip (" + files.length + " images) downloaded.");
+      }).catch(function (e) {
+        console.error(e);
+        showAlert("#bulkAlert", "danger", "ZIP failed: " + (e && e.message ? e.message : e));
+      });
+    } catch (err) {
+      console.error(err);
+      showAlert("#bulkAlert", "danger", "ZIP failed: " + (err && err.message ? err.message : err));
+    }
+  }
+
   function downloadTemplate() {
     var wb = new ExcelJS.Workbook();
     var ws = wb.addWorksheet("QR links");
@@ -1567,6 +1826,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     var el = $(sel);
     el.className = "alert " + kind;
     el.innerHTML = '<span>' + escapeHtml(msg) + '</span>';
+    if (el.scrollIntoView) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }
 
   /* ---------------- Wire up DOM ---------------- */
@@ -1840,6 +2100,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       btn.addEventListener("click", function () {
         $$(".tab-btn").forEach(function (b) { b.classList.toggle("active", b === btn); });
         $$(".tab-panel").forEach(function (p) { p.classList.toggle("active", p.dataset.tab === btn.dataset.tab); });
+        if (btn.dataset.tab === "bulk") renderBulkQrPreview();
       });
     });
 
@@ -1882,16 +2143,21 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $("#captionTemplate").addEventListener("input", function (e) { bulk.captionTemplate = e.target.value; });
     $('input[name="captionMode"]').forEach; // (handled by label select)
     $$('input[name="captionMode"]').forEach(function (r) {
-      r.addEventListener("change", function () { if (r.checked) bulk.captionMode = r.value; });
+      r.addEventListener("change", function () {
+        if (r.checked) { bulk.captionMode = r.value; renderBulkQrPreview(); }
+      });
     });
 
     // generate
     $("#generateBtn").addEventListener("click", generateBulk);
+    $("#downloadZipBtn").addEventListener("click", downloadBulkZip);
+    $("#refreshBulkPreviewBtn").addEventListener("click", function () { renderBulkQrPreview(); });
     // template download
     $("#downloadTemplateBtn").addEventListener("click", downloadTemplate);
     // word column select
     $("#wordColSelect").addEventListener("change", function (e) {
       bulk.wordCol = parseInt(e.target.value, 10);
+      renderBulkQrPreview();
     });
 
     // initial render
