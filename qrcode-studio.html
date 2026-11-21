@@ -645,6 +645,10 @@ footer.app-footer {
               <label>Caption text</label>
               <input id="frameCaption" type="text" value="Scan to visit" placeholder="Scan to visit" />
               <div class="hint">In Bulk mode you can pull this from a column (see the Bulk tab).</div>
+              <label>Caption font size <span id="frameCaptionSizeVal" class="tag">24 px</span></label>
+              <input id="frameCaptionSize" type="range" min="10" max="80" step="1" />
+              <label>Banner height <span id="frameBannerHeightVal" class="tag">18%</span></label>
+              <input id="frameBannerHeight" type="range" min="8" max="40" step="1" />
             </div>
             <div class="row-2">
               <div class="field" id="frameColorWrap">
@@ -658,7 +662,15 @@ footer.app-footer {
             </div>
             <div class="field" id="frameBgWrap">
               <label>Frame background</label>
-              <div class="color-field"><input id="frameBg" type="color" value="#ffffff" /><span class="swatch-name muted">#ffffff</span></div>
+              <div class="color-field" id="frameBgColorWrap"><input id="frameBg" type="color" value="#ffffff" /><span class="swatch-name muted">#ffffff</span></div>
+            </div>
+            <div class="toggle" id="frameColorTransparentWrap">
+              <span class="toggle-label">Transparent banner colour</span>
+              <label class="switch"><input id="frameColorTransparentToggle" type="checkbox" /><span class="slider"></span></label>
+            </div>
+            <div class="toggle" id="frameBgTransparentWrap">
+              <span class="toggle-label">Transparent frame background</span>
+              <label class="switch"><input id="frameBgTransparentToggle" type="checkbox" /><span class="slider"></span></label>
             </div>
           </div>
         </details>
@@ -931,10 +943,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // frame
     frame: "none",                 // none | border | banner | card
     frameColor: "#1e293b",
+    frameColorTransparent: false,  // banner strip transparent
     frameBg: "#ffffff",
+    frameBgTransparent: false,
     frameBorderWidth: 6,
     frameCaption: "Scan to visit",
-    frameCaptionColor: "#ffffff"
+    frameCaptionColor: "#ffffff",
+    frameCaptionSize: 24,          // caption font size in px
+    frameBannerHeight: 18          // banner height as % of min(qr side)
   };
 
   var state = clone(DEFAULT_STATE);
@@ -1128,7 +1144,7 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     var pad = 0, captionH = 0, card = false, border = false;
 
     if (frame === "border") { border = true; pad = Math.max(4, st.frameBorderWidth | 0); }
-    if (frame === "banner") { pad = 10; captionH = Math.round(Math.min(qrW, qrH) * 0.18); }
+    if (frame === "banner") { pad = 10; captionH = Math.round(Math.min(qrW, qrH) * (st.frameBannerHeight || 18) / 100); }
     if (frame === "card") { card = true; pad = 22; }
 
     var W = qrW + pad * 2;
@@ -1142,20 +1158,23 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     ctx.scale(dpr, dpr);
 
     // Background
+    var bgTransparent = !!st.frameBgTransparent;
     if (card) {
-      ctx.save();
-      ctx.shadowColor = "rgba(15,23,42,0.18)";
-      ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
-      roundedRectPath(ctx, 4, 4, W - 8, H - 8, 22);
-      ctx.fillStyle = st.frameBg; ctx.fill();
-      ctx.restore();
+      if (!bgTransparent) {
+        ctx.save();
+        ctx.shadowColor = "rgba(15,23,42,0.18)";
+        ctx.shadowBlur = 18; ctx.shadowOffsetY = 6;
+        roundedRectPath(ctx, 4, 4, W - 8, H - 8, 22);
+        ctx.fillStyle = st.frameBg; ctx.fill();
+        ctx.restore();
+      }
       // subtle border
       roundedRectPath(ctx, 4, 4, W - 8, H - 8, 22);
       ctx.strokeStyle = "rgba(15,23,42,0.08)"; ctx.lineWidth = 1; ctx.stroke();
     } else if (frame === "none") {
       if (!st.bgTransparent) { ctx.fillStyle = st.bgColor; ctx.fillRect(0, 0, W, H); }
       // else: leave transparent
-    } else {
+    } else if (!bgTransparent) {
       // border / banner: solid frame bg
       ctx.fillStyle = st.frameBg; ctx.fillRect(0, 0, W, H);
     }
@@ -1206,12 +1225,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     // Caption banner
     if (frame === "banner") {
       var by = pad + qrH;
-      ctx.fillStyle = st.frameColor;
-      ctx.fillRect(pad, by, qrW, captionH);
+      if (!st.frameColorTransparent) {
+        ctx.fillStyle = st.frameColor;
+        ctx.fillRect(pad, by, qrW, captionH);
+      }
       ctx.fillStyle = st.frameCaptionColor;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
-      var fs = Math.max(12, Math.round(captionH * 0.42));
+      var fs = Math.max(9, Math.round(st.frameCaptionSize || Math.max(12, Math.round(captionH * 0.42))));
       ctx.font = "600 " + fs + "px " + fontStack();
       var caption = (st.frameCaption || "").trim();
       // auto-shrink if too wide
@@ -1914,7 +1935,9 @@ https://github.com/nodeca/pako/blob/main/LICENSE
       ["frameBg", "frameBg", "color"],
       ["frameBorderWidth", "frameBorderWidth", "number"],
       ["frameCaption", "frameCaption", "text"],
-      ["frameCaptionColor", "frameCaptionColor", "color"]
+      ["frameCaptionColor", "frameCaptionColor", "color"],
+      ["frameCaptionSize", "frameCaptionSize", "number"],
+      ["frameBannerHeight", "frameBannerHeight", "number"]
     ];
     map.forEach(function (m) {
       var el = $("#" + m[0]); if (!el) return;
@@ -1927,6 +1950,10 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     $("#bgTransparentToggle").checked = state.bgTransparent;
     $("#iconRemoveBgToggle").checked = state.iconRemoveBg;
     $("#iconBgTransparentToggle").checked = state.iconBgTransparent;
+    var fbgT = $("#frameBgTransparentToggle");
+    if (fbgT) fbgT.checked = !!state.frameBgTransparent;
+    var fcT = $("#frameColorTransparentToggle");
+    if (fcT) fcT.checked = !!state.frameColorTransparent;
     // swatch names update
     updateGradientVisibility();
     updateBgTransparentVisibility();
@@ -1938,6 +1965,8 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     setText("#marginVal", state.margin);
     setText("#iconSizeVal", Math.round(state.iconSize * 100) + "%");
     setText("#frameBorderWidthVal", state.frameBorderWidth + " px");
+    setText("#frameCaptionSizeVal", state.frameCaptionSize + " px");
+    setText("#frameBannerHeightVal", state.frameBannerHeight + "%");
     setText("#gradAngleVal", state.gradAngle + "\u00b0");
   }
 
@@ -1958,6 +1987,12 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     if (capColor) capColor.classList.toggle("hidden", f !== "banner");
     $("#frameBgWrap").classList.toggle("hidden", f === "none");
     $("#frameColorWrap").classList.toggle("hidden", f === "none");
+    var fbgTWrap = $("#frameBgTransparentWrap");
+    if (fbgTWrap) fbgTWrap.classList.toggle("hidden", f === "none");
+    var fbgColor = $("#frameBgColorWrap");
+    if (fbgColor) fbgColor.classList.toggle("hidden", !!state.frameBgTransparent);
+    var fcTWrap = $("#frameColorTransparentWrap");
+    if (fcTWrap) fcTWrap.classList.toggle("hidden", f !== "banner");
   }
   function syncIconControls() {
     state.iconDataUrl = resolveIconDataUrl(state);
@@ -2100,6 +2135,14 @@ https://github.com/nodeca/pako/blob/main/LICENSE
     bind("frameBorderWidth", "frameBorderWidth", { type: "number", onChange: function () { setText("#frameBorderWidthVal", state.frameBorderWidth + " px"); } });
     bind("frameCaption", "frameCaption", { event: "input" });
     bindColor("frameCaptionColor", "frameCaptionColor");
+    bind("frameCaptionSize", "frameCaptionSize", { type: "number", onChange: function () { setText("#frameCaptionSizeVal", state.frameCaptionSize + " px"); } });
+    bind("frameBannerHeight", "frameBannerHeight", { type: "number", onChange: function () { setText("#frameBannerHeightVal", state.frameBannerHeight + "%"); } });
+    $("#frameBgTransparentToggle").addEventListener("change", function (e) {
+      state.frameBgTransparent = e.target.checked; updateFrameVisibility(); saveState(); renderPreview();
+    });
+    $("#frameColorTransparentToggle").addEventListener("change", function (e) {
+      state.frameColorTransparent = e.target.checked; saveState(); renderPreview();
+    });
 
     // tabs
     $$(".tab-btn").forEach(function (btn) {
